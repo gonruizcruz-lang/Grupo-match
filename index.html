@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grupo Match</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f5f7;color:#111}
+header{background:#111;color:#fff;padding:18px 16px;position:sticky;top:0;z-index:5}
+main{max-width:700px;margin:auto;padding:16px}.card{background:#fff;border-radius:22px;padding:18px;margin:12px 0;box-shadow:0 3px 15px #00000012}
+button,input,textarea{font:inherit}button{border:0;border-radius:14px;padding:12px 16px;font-weight:700;cursor:pointer}input,textarea{width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:12px;padding:12px;margin:6px 0 12px;background:#fff}
+.primary{background:#111;color:#fff}.like{background:#e9f9ee;color:#087a2b}.cross{background:#f2f2f2}.danger{background:#ffe8e8;color:#a00}
+nav{display:flex;gap:8px;overflow:auto;margin-bottom:12px}nav button{white-space:nowrap;background:#ddd}.hidden{display:none!important}
+img.photo{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:18px;background:#ddd}
+.actions{display:flex;gap:10px;margin-top:14px}.actions button{flex:1;font-size:17px}
+small{color:#666}.pill{display:inline-block;background:#eee;border-radius:99px;padding:5px 9px;margin:3px;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.stat{font-size:28px;font-weight:800}.person{display:flex;gap:10px;align-items:center}.person img{width:65px;height:65px;object-fit:cover;border-radius:12px}
+.err{background:#ffe8e8;color:#900;padding:12px;border-radius:12px;margin:10px 0}.ok{background:#e8fff0;color:#075f25;padding:12px;border-radius:12px}
+</style>
+</head>
+<body>
+<header><b>Grupo Match</b><span id="mode" style="float:right;font-size:13px"></span></header>
+<main>
+<section id="setup" class="card">
+<h2>Grupo Match</h2>
+<p>Conectando con el servidor…</p>
+<div id="setupMsg"></div>
+</section>
+
+<section id="choice" class="card hidden">
+<h2>¿Quién eres?</h2>
+<button class="primary" onclick="adminLogin()">Soy administrador</button>
+<button class="cross" onclick="participantStart()">Entrar como participante</button>
+</section>
+
+<section id="adminLogin" class="card hidden">
+<h2>Administrador</h2>
+<label>Correo</label><input id="email" type="email">
+<label>Contraseña</label><input id="pass" type="password">
+<button class="primary" onclick="doAdminLogin()">Entrar</button><div id="adminMsg"></div>
+</section>
+
+<section id="participant" class="card hidden">
+<h2>Tu nombre</h2>
+<p>Escribe tu nombre para guardar tus decisiones.</p>
+<input id="pname" placeholder="Nombre">
+<button class="primary" onclick="startParticipant()">Empezar</button><div id="pmsg"></div>
+</section>
+
+<section id="app" class="hidden">
+<nav id="nav"></nav>
+<div id="content"></div>
+</section>
+</main>
+<script>
+let sb, currentUser=null, participant=null, profiles=[], index=0;
+const $=id=>document.getElementById(id);
+const SUPABASE_URL='https://gbgujwpjtkgslvkaowzw.supabase.co';
+const SUPABASE_KEY='sb_publishable_ONxvyf4fMS4443exSUckhw_RCY4b3gr';
+const cfg=()=>({url:SUPABASE_URL,key:SUPABASE_KEY});
+function show(id){document.querySelectorAll('main>section').forEach(x=>x.classList.add('hidden'));$(id).classList.remove('hidden')}
+async function init(){
+ const c=cfg();
+ sb=supabase.createClient(c.url,c.key);
+ $('mode').textContent='Online';
+ show('choice');
+}
+function adminLogin(){show('adminLogin')}
+function participantStart(){show('participant')}
+async function doAdminLogin(){
+ $('adminMsg').textContent='Entrando...';
+ const {data,error}=await sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('pass').value});
+ if(error){$('adminMsg').innerHTML='<div class="err">'+esc(error.message)+'</div>';return}
+ currentUser=data.user; await adminPanel();
+}
+async function participantStartAuth(){
+ const {data,error}=await sb.auth.signInAnonymously();
+ if(error) throw error; return data.user;
+}
+async function startParticipant(){
+ const name=$('pname').value.trim(); if(!name){$('pmsg').innerHTML='<div class="err">Escribe tu nombre.</div>';return}
+ try{
+  currentUser=await participantStartAuth();
+  const {data,error}=await sb.from('participants').insert({name,user_id:currentUser.id}).select().single();
+  if(error) throw error; participant=data; await loadProfiles(); index=0; renderMatch();
+ }catch(e){$('pmsg').innerHTML='<div class="err">'+esc(e.message)+'</div>'}
+}
+async function loadProfiles(){
+ const {data,error}=await sb.from('profiles').select('*').order('created_at',{ascending:true});
+ if(error) throw error; profiles=data||[];
+}
+function nav(items){$('nav').innerHTML=items.map(x=>`<button onclick="${x[1]}">${x[0]}</button>`).join('')}
+function renderMatch(){
+ show('app'); $('mode').textContent='Participante';
+ nav([['Match','renderMatch()'],['Mis resultados','participantResults()'],['Salir','logout()']]);
+ if(index>=profiles.length){participantResults();return}
+ const p=profiles[index];
+ $('content').innerHTML=`<div class="card"><img class="photo" src="${esc(p.photo_url||'')}" onerror="this.style.display='none'"><h2>${esc(p.name)}</h2><p>${esc(p.bio||'')}</p><div>${(p.tags||'').split(',').filter(Boolean).map(t=>`<span class="pill">${esc(t.trim())}</span>`).join('')}</div><div class="actions"><button class="cross" onclick="decide('${p.id}','cross')">❌ Cruzar</button><button class="like" onclick="decide('${p.id}','like')">❤️ Like</button></div><p><small>${index+1} de ${profiles.length}</small></p></div>`;
+}
+async function decide(target,decision){
+ const {error}=await sb.from('decisions').insert({participant_id:participant.id,target_profile_id:target,decision});
+ if(error){alert(error.message);return}
+ index++; renderMatch();
+}
+async function participantResults(){
+ const {data:ds,error}=await sb.from('decisions').select('target_profile_id,decision').eq('participant_id',participant.id);
+ if(error){$('content').innerHTML='<div class="err">'+esc(error.message)+'</div>';return}
+ const likes=(ds||[]).filter(x=>x.decision==='like').length,cross=(ds||[]).filter(x=>x.decision==='cross').length;
+ $('content').innerHTML=`<div class="card"><h2>Has terminado 🎉</h2><div class="grid"><div class="card"><div class="stat">${likes}</div><small>Likes</small></div><div class="card"><div class="stat">${cross}</div><small>Cruces</small></div></div><h3>Tu resultado</h3><p>El administrador podrá ver tus decisiones y los matches cuando haya Likes mutuos.</p></div>`;
+}
+async function adminPanel(){
+ show('app'); $('mode').textContent='Administrador'; nav([['Personas','adminProfiles()'],['Estadísticas','adminStats()'],['Salir','logout()']]); adminProfiles();
+}
+async function adminProfiles(){
+ const {data,error}=await sb.from('profiles').select('*').order('created_at',{ascending:true});
+ if(error){$('content').innerHTML='<div class="err">'+esc(error.message)+'</div>';return}
+ profiles=data||[];
+ $('content').innerHTML=`<div class="card"><h2>Personas</h2><button class="primary" onclick="editProfile()">➕ Añadir persona</button></div>`+
+ profiles.map(p=>`<div class="card person">${p.photo_url?`<img src="${esc(p.photo_url)}">`:`<div style="width:65px;height:65px;background:#ddd;border-radius:12px"></div>`}<div style="flex:1"><b>${esc(p.name)}</b><br><small>${esc(p.bio||'')}</small></div><button onclick="editProfile('${p.id}')">Editar</button></div>`).join('');
+}
+function editProfile(id){
+ const p=profiles.find(x=>x.id===id)||{name:'',bio:'',photo_url:'',tags:''};
+ $('content').innerHTML=`<div class="card"><h2>${id?'Editar':'Añadir'} persona</h2>
+ <label>Nombre</label><input id="pn" value="${attr(p.name)}">
+ <label>Foto</label>
+ <input id="photoFile" type="file" accept="image/*" style="display:none" onchange="uploadProfilePhoto()">
+ <button type="button" class="cross" onclick="document.getElementById('photoFile').click()">📷 Elegir foto de la galería</button>
+ <div id="photoStatus" style="margin-top:8px"></div>
+ <img id="photoPreview" class="photo" src="${esc(p.photo_url||'')}" style="${p.photo_url?'display:block':'display:none'};margin-top:10px">
+ <input id="pu" type="hidden" value="${attr(p.photo_url)}">
+ <label>Biografía</label><textarea id="pb">${esc(p.bio)}</textarea>
+ <label>Etiquetas separadas por comas</label><input id="pt" value="${attr(p.tags)}">
+ <button class="primary" onclick="saveProfile('${id||''}')">Guardar</button>
+ ${id?`<button class="danger" onclick="deleteProfile('${id}')">Eliminar</button>`:''}
+ <button onclick="adminProfiles()">Cancelar</button></div>`;
+}
+async function uploadProfilePhoto(){
+ const input=$('photoFile');
+ const file=input.files && input.files[0];
+ if(!file) return;
+ if(!file.type.startsWith('image/')){alert('Selecciona una foto de la galería.');return}
+ if(file.size>10*1024*1024){alert('La foto debe pesar menos de 10 MB.');return}
+ if(!currentUser){alert('La sesión de administrador no está activa.');return}
+ $('photoStatus').textContent='Subiendo foto desde tu galería...';
+ const ext=(file.name.split('.').pop()||'jpg').toLowerCase().replace(/[^a-z0-9]/g,'')||'jpg';
+ const path=`${currentUser.id}/${crypto.randomUUID()}.${ext}`;
+ const {error}=await sb.storage.from('profile-photos').upload(path,file,{
+   contentType:file.type,
+   upsert:false
+ });
+ if(error){$('photoStatus').innerHTML='<div class="err">'+esc(error.message)+'</div>';return}
+ const {data}=sb.storage.from('profile-photos').getPublicUrl(path);
+ $('pu').value=data.publicUrl;
+ $('photoPreview').src=data.publicUrl;
+ $('photoPreview').style.display='block';
+ $('photoStatus').innerHTML='<div class="ok">Foto de la galería subida correctamente ✅</div>';
+}
+async function saveProfile(id){
+ const row={name:$('pn').value.trim(),photo_url:$('pu').value.trim(),bio:$('pb').value,tags:$('pt').value};
+ if(!row.name){alert('Pon un nombre');return}
+ const r=id?await sb.from('profiles').update(row).eq('id',id):await sb.from('profiles').insert(row);
+ if(r.error){alert(r.error.message);return} adminProfiles();
+}
+async function deleteProfile(id){
+ if(!confirm('¿Eliminar esta persona?'))return;
+ const {error}=await sb.from('profiles').delete().eq('id',id); if(error)alert(error.message); else adminProfiles();
+}
+async function adminStats(){
+ const {data:ds,error}=await sb.from('decisions').select('participant_id,target_profile_id,decision,created_at').order('created_at',{ascending:false});
+ if(error){$('content').innerHTML='<div class="err">'+esc(error.message)+'</div>';return}
+ const {data:ps,error:pe}=await sb.from('participants').select('id,name,profile_id');
+ const {data:pp,error:pr}=await sb.from('profiles').select('id,name');
+ if(pe||pr){$('content').innerHTML='<div class="err">'+esc((pe||pr).message)+'</div>';return}
+ profiles=pp||[];
+ const pById=new Map((ps||[]).map(x=>[x.id,x]));
+ const profileById=new Map(profiles.map(x=>[x.id,x]));
+ const participantByName=new Map((ps||[]).map(x=>[String(x.name||'').trim().toLowerCase(),x]));
+ const likes=(ds||[]).filter(x=>x.decision==='like');
+ const likeSet=new Set(likes.map(x=>x.participant_id+'|'+x.target_profile_id));
+ const matches=[];
+ const seenMatches=new Set();
+ for(const a of ps||[]){
+  const aProfile=profileById.get(
+    profiles.find(p=>String(p.name||'').trim().toLowerCase()===String(a.name||'').trim().toLowerCase())?.id
+  );
+  if(!aProfile) continue;
+  for(const b of ps||[]){
+   if(a.id===b.id) continue;
+   const bProfile=profileById.get(
+    profiles.find(p=>String(p.name||'').trim().toLowerCase()===String(b.name||'').trim().toLowerCase())?.id
+   );
+   if(!bProfile) continue;
+   const key=[a.id,b.id].sort().join('|');
+   if(seenMatches.has(key)) continue;
+   if(likeSet.has(a.id+'|'+bProfile.id) && likeSet.has(b.id+'|'+aProfile.id)){
+    seenMatches.add(key);
+    matches.push({a,b});
+   }
+  }
+ }
+ $('content').innerHTML=`<div class="card"><h2>Estadísticas</h2><div class="grid"><div class="card"><div class="stat">${likes.length}</div><small>Likes totales</small></div><div class="card"><div class="stat">${(ds||[]).length}</div><small>Decisiones</small></div><div class="card"><div class="stat">${matches.length}</div><small>Matches</small></div></div></div>
+ <div class="card"><h2>❤️ Likes</h2>${likes.length?likes.map(x=>`<p>❤️ <b>${esc((pById.get(x.participant_id)||{}).name||'Desconocido')}</b> → <b>${esc((profileById.get(x.target_profile_id)||{}).name||'Persona')}</b></p>`).join(''):'<p>Aún no hay Likes.</p>'}</div>
+ <div class="card"><h2>🤝 Matches</h2>${matches.length?matches.map(m=>`<p>🤝 <b>${esc(m.a.name)}</b> ↔ <b>${esc(m.b.name)}</b></p>`).join(''):'<p>Aún no hay Likes mutuos.</p>'}</div>`;
+}
+
+function profileName(id){return (profiles.find(p=>p.id===id)||{}).name||'Persona'}
+async function logout(){await sb.auth.signOut();currentUser=null;participant=null;show('choice')}
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function attr(s){return esc(s).replace(/`/g,'&#96;')}
+init();
+</script>
+</body>
+</html>
